@@ -2,9 +2,6 @@ version: 2.1
 
 orbs:
   node: circleci/node@4.7.0
-  heroku: circleci/heroku@1.2.6
-  snyk: snyk/snyk@0.1.0
-  docker: circleci/docker@1.5.0
 
 jobs:
   build-and-test:
@@ -20,113 +17,84 @@ jobs:
       - node/install-packages
       - run:
           command: |
-            echo $(circleci tests glob "test/**/*.test.js")
-            circleci tests glob "test/**/*.test.js" | circleci tests split |
-            xargs npm run test-ci
+            npm run test-ci
+    
+  trigger-project-b-pipeline:
+    docker: 
+      - image: cimg/base:2021.11
+    resource_class: small
+    steps:
       - run:
-          name: Copy tests results for storing
+          name: Ping another pipeline
           command: |
-            mkdir ~/test-results
-            cp test-results.xml ~/test-results/
-          when: always
+            CREATED_PIPELINE=$(curl --request POST \
+              --url https://circleci.com/api/v2/project/gh/zmarkan-demos/semaphore_demo_project_b/pipeline \
+              --header "Circle-Token: $CIRCLECI_API_KEY" \
+              --header "content-type: application/json" \
+              --data '{"branch":"main","parameters":{"triggering-pipeline-id":"<< pipeline.id >>"}}' \
+            | jq -r '.id'
+            )
+
+            echo "my created pipeline"
+            echo $CREATED_PIPELINE
+
+            mkdir ~/workspace
+            echo $CREATED_PIPELINE > pipeline.txt
+      - persist_to_workspace:
+          root: .
+          paths: 
+            - pipeline.txt  
+
+  check-status-of-triggered-pipeline:
+    docker: 
+      - image: cimg/base:2021.11
+    resource_class: small 
+    steps:
+      - attach_workspace:
+          at: workspace
       - run:
-          name: Process test report
-          when: always
+          name: Check triggered workflow status
           command: |
-              # Convert absolute paths to relative to support splitting tests by timing
-              if [ -e ~/test-results.xml ]; then
-                sed -i "s|`pwd`/||g" ~/test-results.xml
-              fi
-      - store_test_results:
-          path: ~/test-results
-      - store_artifacts:
-          path: ~/test-results
+            triggered_pipeline_id=$(cat workspace/pipeline.txt)
 
-  run-flaky-test:
-    docker:
-      - image: cimg/node:15.10.0
-    steps:
-      - checkout
-      - node/install-packages
-      - run:
-          command: npm run flaky-test
-      - run:
-          name: Copy tests results for storing
-          command: |
-            mkdir ~/test-results
-            cp test-results.xml ~/test-results/
-          when: always
-      - store_test_results:
-          path: ~/test-results
-      - store_artifacts:
-          path: ~/test-results
-  
-  dependency-vulnerability-scan:
-    docker:
-      - image: cimg/node:15.10.0
-    steps:
-      - checkout
-      - node/install-packages
-      - snyk/scan:
-          fail-on-issues: true
+            created_workflow_status=$(curl --request GET \
+                --url "https://circleci.com/api/v2/pipeline/${triggered_pipeline_id}/workflow" \
+                --header "Circle-Token: $CIRCLECI_API_KEY" \
+                --header "content-type: application/json" \
+              | jq -r '.items[0].status'
+            )
 
-  build-docker:
-    executor: docker/docker
-    steps:
-      - checkout
-      - setup_remote_docker
-      - docker/check
-      - docker/build:
-          image: $DOCKER_LOGIN/$CIRCLE_PROJECT_REPONAME
-          tag: 0.1.<< pipeline.number >>
-      - snyk/scan:
-          docker-image-name: $DOCKER_LOGIN/$CIRCLE_PROJECT_REPONAME
-          fail-on-issues: false
-          monitor-on-build: false
+            echo $created_workflow_status
 
-      - docker/push:
-          image: $DOCKER_LOGIN/$CIRCLE_PROJECT_REPONAME
-          tag: 0.1.<< pipeline.number >>
+            if [[ "$created_workflow_status" != "success" ]]; then
+              echo "Workflow not successful - ${created_workflow_status}"
+              (exit -1) 
+            fi
+            
+            echo "Created workflow successful"
 
-  deploy-to-heroku:
-    executor: heroku/default
-    steps:
-      - setup_remote_docker
-      - heroku/install
-      - heroku/check-authentication
-      - checkout
-      - heroku/push-docker-image:
-          app-name: $HEROKU_APP_NAME  
-          process-types: web
-      - heroku/release-docker-image:
-          app-name: $HEROKU_APP_NAME
-          process-types: web
 
 workflows:
   node-test-and-deploy:
     jobs:
-      - build-and-test:
-          matrix:
-            parameters:
-              node-version: ["13.8", "14.2", "15.11"]
-      - dependency-vulnerability-scan:
-          context: Infosec
-      - build-docker:
+      - build-and-test
+      - trigger-project-b-pipeline:
           context: 
-            - docker-deployment
-            - Infosec
+            - circleci-api
           requires:
             - build-and-test
-            - dependency-vulnerability-scan
-      - hold-for-approval:
-          type: approval
-          requires: 
-            - build-docker
           filters:
             branches:
               only: main
-      - deploy-to-heroku:
-          context:
-            - prod-deployment
+      - wait-for-triggered-pipeline:
+          type: approval
           requires: 
-            - hold-for-approval
+            - trigger-project-b-pipeline
+      - check-status-of-triggered-pipeline:
+          requires:
+            - wait-for-triggered-pipeline
+          context:
+            - circleci-api
+  
+
+
