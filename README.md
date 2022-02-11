@@ -1,19 +1,4 @@
-# circleci-node-docker-demo-template
+# Circleback CI/CD demo project - A
 
-Template for CircleCI demos
+Demo project that triggers a new CI/CD pipeline in another project - https://github.com/zmarkan-demos/circleback-cicd-project-b, waits for it to signal it has completed, and terminates based on its status.
 
-## 2 config files:
-
-- basic - `config.yml`
-- advanced - `config-advanced.yml`
-
-## Setup:
-
-- (Create a new project from template)
-- Auth with CircleCI
-- Pick project from list
-- Docker account & Heroku account & app configured
-- Set up environment values:
-    - $DOCKER_LOGIN
-    - $DOCKER_PWD
-    - $HEROKU_APP_NAME
